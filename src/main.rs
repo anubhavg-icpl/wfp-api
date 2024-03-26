@@ -4,7 +4,10 @@ use windows::{
     Win32::{
         Foundation::HANDLE,
         NetworkManagement::WindowsFilteringPlatform::{
-            FwpmGetAppIdFromFileName0, FWPM_ACTION0, FWPM_CONDITION_ALE_APP_ID, FWPM_DISPLAY_DATA0, FWPM_FILTER0, FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWP_ACTION_BLOCK, FWP_BYTE_BLOB, FWP_BYTE_BLOB_TYPE, FWP_CONDITION_VALUE0, FWP_CONDITION_VALUE0_0, FWP_MATCH_EQUAL
+            FwpmGetAppIdFromFileName0, FWPM_ACTION0, FWPM_CONDITION_ALE_APP_ID, FWPM_DISPLAY_DATA0,
+            FWPM_FILTER0, FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWP_ACTION_BLOCK,
+            FWP_BYTE_BLOB, FWP_BYTE_BLOB_TYPE, FWP_CONDITION_VALUE0, FWP_CONDITION_VALUE0_0,
+            FWP_MATCH_EQUAL,
         },
         System::Rpc::RPC_C_AUTHN_DEFAULT,
     },
@@ -57,12 +60,7 @@ fn main() {
             ..Default::default()
         };
 
-        let add_status = FwpmFilterAdd0(
-            handle,
-            &filter,
-            None,
-            None
-        );
+        let add_status = FwpmFilterAdd0(handle, &filter, None, None);
 
         println!("{:?}", add_status);
     }
