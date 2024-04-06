@@ -20,8 +20,8 @@ fn main() {
         FwpmEngineOpen0(None, RPC_C_AUTHN_DEFAULT as u32, None, None, &mut handle);
 
         let mut app_id = FWP_BYTE_BLOB::default();
-        let mut app_id_ptr = &mut app_id as *mut FWP_BYTE_BLOB;
-        let app_id_ptr_ptr = &mut app_id_ptr as *mut *mut FWP_BYTE_BLOB;
+        let mut app_id_ptr: *mut FWP_BYTE_BLOB = &mut app_id;
+        let app_id_ptr_ptr: *mut *mut FWP_BYTE_BLOB = &mut app_id_ptr;
 
         let path = String::from(
             r#"C:\\Program Files\\WindowsApps\\Microsoft.WindowsCalculator_11.2401.0.0_x64__8wekyb3d8bbwe\\CalculatorApp.exe"#,
