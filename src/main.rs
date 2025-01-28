@@ -8,10 +8,11 @@ use windows::{
         NetworkManagement::WindowsFilteringPlatform::{
             FWPM_ACTION0, FWPM_ACTION0_0, FWPM_CONDITION_ALE_APP_ID,
             FWPM_DISPLAY_DATA0, FWPM_FILTER0, FWPM_FILTER_CONDITION0,
-            FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWP_ACTION_BLOCK,
-            FWP_BYTE_BLOB_TYPE, FWP_CONDITION_VALUE0, FWP_CONDITION_VALUE0_0,
-            FWP_MATCH_EQUAL, FWPM_FILTER_FLAGS, FwpmFilterAdd0,
-            FwpmSubLayerAdd0, FWPM_SUBLAYER0, FWP_BYTE_BLOB,
+            FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+            FWP_ACTION_BLOCK, FWP_BYTE_BLOB_TYPE, FWP_CONDITION_VALUE0, 
+            FWP_CONDITION_VALUE0_0, FWP_MATCH_EQUAL, FWPM_FILTER_FLAGS, 
+            FwpmFilterAdd0, FwpmSubLayerAdd0, FWPM_SUBLAYER0, FWP_BYTE_BLOB,
+            FwpmEngineClose0,
         },
         Security::{
             self,
@@ -25,12 +26,20 @@ use glob::glob;
 
 use crate::{app::open_app_id, engine::open_engine};
 
+struct EngineHandle(HANDLE);
+
+impl Drop for EngineHandle {
+    fn drop(&mut self) {
+        unsafe {
+            FwpmEngineClose0(self.0);
+        }
+    }
+}
 
 fn create_sublayer(engine_handle: HANDLE) -> Result<GUID> {
     unsafe {
         let sublayer_guid = GUID::new()?;
         
-        // Create wide string for the name and hold it in scope
         let name = "Calculator Network Block";
         let mut name_wide: Vec<u16> = name.encode_utf16().collect();
         name_wide.push(0);
@@ -83,7 +92,6 @@ fn create_filter(handle: HANDLE, sublayer_guid: GUID, app_id: &mut FWP_BYTE_BLOB
             },
         };
 
-        // Create wide string for the filter name
         let name = "Calculator Network Block Filter";
         let mut name_wide: Vec<u16> = name.encode_utf16().collect();
         name_wide.push(0);
@@ -91,8 +99,8 @@ fn create_filter(handle: HANDLE, sublayer_guid: GUID, app_id: &mut FWP_BYTE_BLOB
         let mut desc_wide: Vec<u16> = description.encode_utf16().collect();
         desc_wide.push(0);
 
-        println!("Creating WFP filter...");
-        let filter = FWPM_FILTER0 {
+        println!("Creating IPv4 WFP filter...");
+        let filter_v4 = FWPM_FILTER0 {
             displayData: FWPM_DISPLAY_DATA0 {
                 name: PWSTR(name_wide.as_mut_ptr()),
                 description: PWSTR(desc_wide.as_mut_ptr()),
@@ -111,14 +119,29 @@ fn create_filter(handle: HANDLE, sublayer_guid: GUID, app_id: &mut FWP_BYTE_BLOB
             ..Default::default()
         };
 
-        println!("Adding filter to Windows Filtering Platform...");
-        match FwpmFilterAdd0(handle, &filter, None, None) {
+        println!("Adding IPv4 filter...");
+        match FwpmFilterAdd0(handle, &filter_v4, None, None) {
+            0 => println!("Successfully added IPv4 filter"),
+            error => {
+                println!("Failed to add IPv4 filter. Error: {:#x}", error);
+                return Err(windows::core::Error::from_win32());
+            }
+        }
+
+        println!("Creating IPv6 WFP filter...");
+        let filter_v6 = FWPM_FILTER0 {
+            layerKey: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+            ..filter_v4
+        };
+
+        println!("Adding IPv6 filter...");
+        match FwpmFilterAdd0(handle, &filter_v6, None, None) {
             0 => {
-                println!("Successfully added filter");
+                println!("Successfully added IPv6 filter");
                 Ok(())
             },
             error => {
-                println!("Failed to add filter. Error: {:#x}", error);
+                println!("Failed to add IPv6 filter. Error: {:#x}", error);
                 Err(windows::core::Error::from_win32())
             }
         }
@@ -135,28 +158,29 @@ fn main() -> Result<()> {
     }
     println!("Program is running with elevated privileges");
 
+    let handle = open_engine()?;
+    let engine_handle = EngineHandle(handle);
+    println!("Successfully opened engine");
+    
+    let path = get_calculator_path().ok_or_else(|| {
+        windows::core::Error::new(
+            HRESULT(-1),
+            "Could not find Calculator path"
+        )
+    })?;
+
+    if !Path::new(&path).exists() {
+        return Err(windows::core::Error::new(
+            HRESULT(-1),
+            "Calculator path does not exist"
+        ));
+    }
+    println!("Verified Calculator path exists");
+
+    let mut path_bits: Vec<u16> = path.encode_utf16().collect();
+    path_bits.push(0);
+
     unsafe {
-        let handle = open_engine()?;
-        println!("Successfully opened engine");
-        
-        let path = get_calculator_path().ok_or_else(|| {
-            windows::core::Error::new(
-                HRESULT(-1),
-                "Could not find Calculator path"
-            )
-        })?;
-
-        if !Path::new(&path).exists() {
-            return Err(windows::core::Error::new(
-                HRESULT(-1),
-                "Calculator path does not exist"
-            ));
-        }
-        println!("Verified Calculator path exists");
-
-        let mut path_bits: Vec<u16> = path.encode_utf16().collect();
-        path_bits.push(0);
-
         let mut app_id = open_app_id(PCWSTR(path_bits.as_mut_ptr()))
             .map_err(|e| windows::core::Error::new(
                 HRESULT(e as i32),
@@ -164,12 +188,18 @@ fn main() -> Result<()> {
             ))?;
         println!("Successfully got app ID");
 
-        let sublayer_guid = create_sublayer(handle)?;
-        create_filter(handle, sublayer_guid, &mut app_id)?;
-
-        Ok(())
+        let sublayer_guid = create_sublayer(engine_handle.0)?;
+        create_filter(engine_handle.0, sublayer_guid, &mut app_id)?;
     }
+
+    println!("Successfully created network blocking rules for Calculator");
+    println!("To verify: ");
+    println!("1. Open Calculator");
+    println!("2. Try using Currency Converter or any online feature");
+    println!("3. The connection should be blocked");
+    Ok(())
 }
+
 
 fn get_calculator_path() -> Option<String> {
     println!("Searching for modern Calculator path...");
