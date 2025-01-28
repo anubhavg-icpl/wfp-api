@@ -5,11 +5,16 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies.windows]
-version = "0.54"
-features = [
-  "Wdk_NetworkManagement_WindowsFilteringPlatform",
-  "Win32_NetworkManagement_WindowsFilteringPlatform",
-  "Win32_Security",
-  "Win32_System_Rpc",
-]
+[dependencies]
+glob = "0.3"
+windows = { version = "0.59", features = [
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Wdk_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Rpc",
+    "Win32_System",
+    "Win32_System_Memory"
+]}
