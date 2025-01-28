@@ -1,17 +1,19 @@
-use windows::{core::PCWSTR, Win32::NetworkManagement::WindowsFilteringPlatform::{FwpmGetAppIdFromFileName0, FWP_BYTE_BLOB}};
+use windows::{
+    core::{PCWSTR, Result},
+    Win32::NetworkManagement::WindowsFilteringPlatform::{
+        FwpmGetAppIdFromFileName0, FWP_BYTE_BLOB,
+    },
+};
 
-pub fn open_app_id(path: PCWSTR) -> Result<FWP_BYTE_BLOB, u32> {
-    let mut app_id = FWP_BYTE_BLOB::default();
-    let mut app_id_ptr: *mut FWP_BYTE_BLOB = &mut app_id;
-    let app_id_ptr_ptr: *mut *mut FWP_BYTE_BLOB = &mut app_id_ptr;
-
-    let status = unsafe {
-        FwpmGetAppIdFromFileName0(path, app_id_ptr_ptr)
-    };
-
-    if status != 0 {
-        return Err(status)
+pub fn open_app_id(path: PCWSTR) -> Result<FWP_BYTE_BLOB> {
+    unsafe {
+        let mut app_id = std::ptr::null_mut();
+        match FwpmGetAppIdFromFileName0(path, &mut app_id) {
+            0 => Ok(*app_id),
+            error => {
+                println!("Failed to get app ID. Error: {:#x}", error);
+                Err(windows::core::Error::from_win32())
+            }
+        }
     }
-
-    Ok(app_id)
 }

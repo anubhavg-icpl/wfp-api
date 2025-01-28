@@ -1,6 +1,7 @@
 mod app;
 mod engine;
 
+
 use windows::{
     core::{PCWSTR, PWSTR, GUID, HRESULT, Result},
     Win32::{
@@ -12,7 +13,8 @@ use windows::{
             FWP_ACTION_BLOCK, FWP_BYTE_BLOB_TYPE, FWP_CONDITION_VALUE0, 
             FWP_CONDITION_VALUE0_0, FWP_MATCH_EQUAL, FWPM_FILTER_FLAGS, 
             FwpmFilterAdd0, FwpmSubLayerAdd0, FWPM_SUBLAYER0, FWP_BYTE_BLOB,
-            FwpmEngineClose0,
+            FwpmEngineClose0, FwpmFilterDeleteByKey0, FwpmSubLayerDeleteByKey0,
+            FwpmFilterGetByKey0,
         },
         Security::{
             self,
@@ -25,6 +27,12 @@ use std::{path::Path, ptr::null_mut};
 use glob::glob;
 
 use crate::{app::open_app_id, engine::open_engine};
+
+struct FilterInfo {
+    filter_guid_v4: GUID,
+    filter_guid_v6: GUID,
+    sublayer_guid: GUID,
+}
 
 struct EngineHandle(HANDLE);
 
@@ -79,8 +87,11 @@ fn create_sublayer(engine_handle: HANDLE) -> Result<GUID> {
     }
 }
 
-fn create_filter(handle: HANDLE, sublayer_guid: GUID, app_id: &mut FWP_BYTE_BLOB) -> Result<()> {
+fn create_filter(handle: HANDLE, sublayer_guid: GUID, app_id: &mut FWP_BYTE_BLOB) -> Result<FilterInfo> {
     unsafe {
+        let filter_guid_v4 = GUID::new()?;
+        let filter_guid_v6 = GUID::new()?;
+
         let mut condition = FWPM_FILTER_CONDITION0 {
             fieldKey: FWPM_CONDITION_ALE_APP_ID,
             matchType: FWP_MATCH_EQUAL,
@@ -101,6 +112,7 @@ fn create_filter(handle: HANDLE, sublayer_guid: GUID, app_id: &mut FWP_BYTE_BLOB
 
         println!("Creating IPv4 WFP filter...");
         let filter_v4 = FWPM_FILTER0 {
+            filterKey: filter_guid_v4,
             displayData: FWPM_DISPLAY_DATA0 {
                 name: PWSTR(name_wide.as_mut_ptr()),
                 description: PWSTR(desc_wide.as_mut_ptr()),
@@ -130,6 +142,7 @@ fn create_filter(handle: HANDLE, sublayer_guid: GUID, app_id: &mut FWP_BYTE_BLOB
 
         println!("Creating IPv6 WFP filter...");
         let filter_v6 = FWPM_FILTER0 {
+            filterKey: filter_guid_v6,
             layerKey: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
             ..filter_v4
         };
@@ -138,17 +151,74 @@ fn create_filter(handle: HANDLE, sublayer_guid: GUID, app_id: &mut FWP_BYTE_BLOB
         match FwpmFilterAdd0(handle, &filter_v6, None, None) {
             0 => {
                 println!("Successfully added IPv6 filter");
-                Ok(())
+                Ok(FilterInfo {
+                    filter_guid_v4,
+                    filter_guid_v6,
+                    sublayer_guid,
+                })
             },
             error => {
                 println!("Failed to add IPv6 filter. Error: {:#x}", error);
+                // Clean up the IPv4 filter if IPv6 fails
+                FwpmFilterDeleteByKey0(handle, &filter_guid_v4);
                 Err(windows::core::Error::from_win32())
             }
         }
     }
 }
 
+fn remove_filters(handle: HANDLE, filter_info: &FilterInfo) -> Result<()> {
+    unsafe {
+        println!("Removing IPv4 filter...");
+        match FwpmFilterDeleteByKey0(handle, &filter_info.filter_guid_v4) {
+            0 => println!("Successfully removed IPv4 filter"),
+            error => println!("Failed to remove IPv4 filter: {:#x}", error),
+        }
+
+        println!("Removing IPv6 filter...");
+        match FwpmFilterDeleteByKey0(handle, &filter_info.filter_guid_v6) {
+            0 => println!("Successfully removed IPv6 filter"),
+            error => println!("Failed to remove IPv6 filter: {:#x}", error),
+        }
+
+        println!("Removing sublayer...");
+        match FwpmSubLayerDeleteByKey0(handle, &filter_info.sublayer_guid) {
+            0 => println!("Successfully removed sublayer"),
+            error => println!("Failed to remove sublayer: {:#x}", error),
+        }
+
+        Ok(())
+    }
+}
+
+fn verify_filters(handle: HANDLE, filter_info: &FilterInfo) -> Result<bool> {
+    unsafe {
+        let mut filter_v4 = std::ptr::null_mut();
+        let mut filter_v6 = std::ptr::null_mut();
+
+        let v4_exists = FwpmFilterGetByKey0(
+            handle, 
+            &filter_info.filter_guid_v4, 
+            &mut filter_v4
+        ) == 0;
+
+        let v6_exists = FwpmFilterGetByKey0(
+            handle, 
+            &filter_info.filter_guid_v6, 
+            &mut filter_v6
+        ) == 0;
+
+        println!("IPv4 filter status: {}", if v4_exists { "Active" } else { "Not found" });
+        println!("IPv6 filter status: {}", if v6_exists { "Active" } else { "Not found" });
+
+        Ok(v4_exists && v6_exists)
+    }
+}
+
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let remove_mode = args.len() > 1 && args[1] == "--remove";
+
     if !is_elevated() {
         println!("Program is not running with elevated privileges");
         return Err(windows::core::Error::new(
@@ -161,6 +231,12 @@ fn main() -> Result<()> {
     let handle = open_engine()?;
     let engine_handle = EngineHandle(handle);
     println!("Successfully opened engine");
+
+    if remove_mode {
+        // TODO: Implement filter removal using stored GUIDs
+        println!("Filter removal requires stored GUIDs from previous installation");
+        return Ok(());
+    }
     
     let path = get_calculator_path().ok_or_else(|| {
         windows::core::Error::new(
@@ -182,23 +258,36 @@ fn main() -> Result<()> {
 
     unsafe {
         let mut app_id = open_app_id(PCWSTR(path_bits.as_mut_ptr()))
-            .map_err(|e| windows::core::Error::new(
-                HRESULT(e as i32),
-                "Failed to open app ID"
-            ))?;
+    .map_err(|e| windows::core::Error::new(
+        e.code(),  // Use code() instead of casting
+        "Failed to open app ID"
+    ))?;
         println!("Successfully got app ID");
 
         let sublayer_guid = create_sublayer(engine_handle.0)?;
-        create_filter(engine_handle.0, sublayer_guid, &mut app_id)?;
+        let filter_info = create_filter(engine_handle.0, sublayer_guid, &mut app_id)?;
+
+        println!("\nVerifying filter installation...");
+        if verify_filters(engine_handle.0, &filter_info)? {
+            println!("\nFilters successfully installed and verified");
+            println!("\nFilter details for future removal:");
+            println!("IPv4 Filter GUID: {:?}", filter_info.filter_guid_v4);
+            println!("IPv6 Filter GUID: {:?}", filter_info.filter_guid_v6);
+            println!("Sublayer GUID: {:?}", filter_info.sublayer_guid);
+        } else {
+            println!("\nWarning: Some filters may not be installed correctly");
+        }
     }
 
-    println!("Successfully created network blocking rules for Calculator");
-    println!("To verify: ");
+    println!("\nTo verify blocking:");
     println!("1. Open Calculator");
     println!("2. Try using Currency Converter or any online feature");
     println!("3. The connection should be blocked");
+    println!("\nTo remove filters, run with --remove flag");
+    
     Ok(())
 }
+
 
 
 fn get_calculator_path() -> Option<String> {
